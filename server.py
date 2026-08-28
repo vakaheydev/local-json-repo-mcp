@@ -399,6 +399,156 @@ def _read_by_scope(
     return values
 
 
+def _diagnose_pattern_group(
+    target: SearchTarget,
+    patterns: list[str],
+    sample_limit: int,
+) -> dict[str, Any]:
+    details: list[dict[str, Any]] = []
+    unique_files: set[Path] = set()
+
+    for pattern in patterns:
+        matches = sorted(
+            path
+            for path in target.worktree_path.glob(pattern)
+            if path.is_file()
+        )
+        unique_files.update(path.resolve() for path in matches)
+        details.append(
+            {
+                "pattern": pattern,
+                "count": len(matches),
+                "samples": [
+                    path.relative_to(target.worktree_path).as_posix()
+                    for path in matches[:sample_limit]
+                ],
+            }
+        )
+
+    return {
+        "unique_count": len(unique_files),
+        "patterns": details,
+    }
+
+
+def _diagnose_target(target: SearchTarget, sample_limit: int) -> dict[str, Any]:
+    worktree = target.worktree_path
+    zone_path = worktree / target.zone_directory
+    zone_exists = zone_path.exists() and zone_path.is_dir()
+
+    raw_json_files = (
+        sorted(path for path in zone_path.rglob("*.json") if path.is_file())
+        if zone_exists
+        else []
+    )
+
+    api_patterns = target.patterns(API_PATTERNS)
+    application_patterns = target.patterns(APPLICATION_PATTERNS)
+    all_json_patterns = target.patterns(ALL_JSON_PATTERNS)
+
+    api_diagnostics = _diagnose_pattern_group(target, api_patterns, sample_limit)
+    application_diagnostics = _diagnose_pattern_group(
+        target,
+        application_patterns,
+        sample_limit,
+    )
+    all_json_diagnostics = _diagnose_pattern_group(
+        target,
+        all_json_patterns,
+        sample_limit,
+    )
+
+    suspected_issues: list[str] = []
+    configured_zone_names = {
+        str(directory).replace("\\", "/").strip("/").casefold()
+        for directory in ENVIRONMENTS.zones.values()
+    }
+    prefixed_patterns = []
+    for pattern in API_PATTERNS + APPLICATION_PATTERNS + ALL_JSON_PATTERNS:
+        normalized = pattern.replace("\\", "/").lstrip("/")
+        first = normalized.split("/", 1)[0].casefold()
+        if first in configured_zone_names:
+            prefixed_patterns.append(pattern)
+
+    if not worktree.exists():
+        suspected_issues.append("Managed worktree path does not exist")
+    elif not zone_exists:
+        suspected_issues.append(
+            f"Zone directory '{target.zone_directory}' does not exist in worktree"
+        )
+    elif not raw_json_files:
+        suspected_issues.append(
+            f"Zone '{target.zone_directory}' exists but contains no JSON files"
+        )
+
+    if raw_json_files and all_json_diagnostics["unique_count"] == 0:
+        suspected_issues.append(
+            "JSON files exist in the zone, but configured all_json patterns match none"
+        )
+
+    if raw_json_files and api_diagnostics["unique_count"] == 0:
+        suspected_issues.append(
+            "JSON files exist in the zone, but configured API patterns match none"
+        )
+
+    if prefixed_patterns:
+        suspected_issues.append(
+            "Some file_patterns already start with INT/EXT. Patterns are now "
+            "zone-relative because the server prefixes the selected zone automatically: "
+            + ", ".join(prefixed_patterns)
+        )
+
+    return {
+        "scope": target.scope,
+        "stage": target.stage,
+        "zone": target.zone,
+        "branch": target.branch,
+        "commit": target.commit_sha,
+        "worktree_path": str(worktree),
+        "worktree_exists": worktree.exists(),
+        "zone_directory": target.zone_directory,
+        "zone_path": str(zone_path),
+        "zone_exists": zone_exists,
+        "raw_json_count": len(raw_json_files),
+        "raw_json_samples": [
+            path.relative_to(worktree).as_posix()
+            for path in raw_json_files[:sample_limit]
+        ],
+        "configured_patterns": {
+            "apis": API_PATTERNS,
+            "applications": APPLICATION_PATTERNS,
+            "all_json": ALL_JSON_PATTERNS,
+        },
+        "expanded_patterns": {
+            "apis": api_diagnostics,
+            "applications": application_diagnostics,
+            "all_json": all_json_diagnostics,
+        },
+        "suspected_issues": suspected_issues,
+    }
+
+
+@mcp.tool()
+def diagnose_search(
+    scope: str = DEFAULT_SCOPE,
+    sample_limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Diagnose worktree and glob matching for a search scope. Never cached.
+
+    Shows the resolved worktree/branch/SHA, whether INT/EXT exists, how many
+    JSON files physically exist in the zone, the final expanded glob patterns,
+    their match counts, sample paths, and likely configuration problems.
+    """
+    if sample_limit < 1 or sample_limit > 20:
+        raise ValueError("sample_limit must be between 1 and 20")
+
+    logger.info("diagnose_search scope=%s sample_limit=%s", scope, sample_limit)
+    return [
+        _diagnose_target(target, sample_limit)
+        for target in ENVIRONMENTS.resolve_scope(scope)
+    ]
+
+
 @mcp.tool()
 def git_pull(scope: str = DEFAULT_SCOPE) -> list[dict[str, Any]]:
     """Pull managed Git environment(s). scope: stage_zone, stage, or all.

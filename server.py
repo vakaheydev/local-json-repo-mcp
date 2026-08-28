@@ -197,7 +197,6 @@ def _values_at_key(data: Any, key: str) -> list[Any]:
     elif isinstance(data, list):
         for item in data:
             results.extend(_values_at_key(item, key))
-
     return results
 
 
@@ -268,7 +267,7 @@ def _api_summary(document: dict[str, Any]) -> dict[str, Any]:
     data = document["data"]
 
     return {
-        "path": document["path"],
+        "x-filepath": document["path"],
         "id": _first(data, API_ID_PATHS),
         "name": _first(data, API_NAME_PATHS),
         "version": _first(data, API_VERSION_PATHS),
@@ -290,7 +289,7 @@ def _application_summary(document: dict[str, Any]) -> dict[str, Any]:
     data = document["data"]
 
     return {
-        "path": document["path"],
+        "x-filepath": document["path"],
         "id": _first(data, APP_ID_PATHS),
         "name": _first(data, APP_NAME_PATHS),
         "description": _first(data, APP_DESCRIPTION_PATHS),

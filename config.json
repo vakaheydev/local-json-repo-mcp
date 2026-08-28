@@ -81,5 +81,27 @@
   },
   "summary": {
     "max_values_per_field": 10
+  },
+  "cache": {
+    "enabled": true,
+    "storage": {
+      "type": "ram",
+      "file": {
+        "path": "./cache/cache.json"
+      }
+    },
+    "default_ttl_seconds": 300,
+    "ttl_by_operation": {
+      "search_repository": 120,
+      "list_apis": 600,
+      "list_applications": 600
+    },
+    "disabled_operations": [
+      "get_api_definition",
+      "get_application_definition",
+      "get_json_definition",
+      "get_json_fields",
+      "get_json_value_by_path"
+    ]
   }
 }

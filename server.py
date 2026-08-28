@@ -25,19 +25,13 @@ REPO_PATH = Path(
     or "."
 ).expanduser().resolve()
 
-API_PATTERNS = [
-    "**/*.Api.json",
-    "**/*api*.json",
-]
-
+API_PATTERNS = ["**/*.Api.json", "**/*api*.json"]
 APPLICATION_PATTERNS = [
     "**/*.Application.json",
     "**/*application*.json",
     "**/*app*.json",
 ]
-
 ALL_JSON_PATTERNS = "**/*.json"
-
 EXCLUDE_PATTERNS = [
     "**/.git/**",
     "**/node_modules/**",
@@ -50,7 +44,6 @@ API_NAME_PATHS = ["name", "metadata.name"]
 API_VERSION_PATHS = ["version", "apiVersion", "metadata.version"]
 API_DESCRIPTION_PATHS = ["description", "metadata.description"]
 API_STATE_PATHS = ["lifecycle_state", "lifecycleState", "state"]
-
 APP_ID_PATHS = ["id", "application", "application_id", "applicationId", "metadata.id"]
 APP_NAME_PATHS = ["name", "metadata.name"]
 APP_DESCRIPTION_PATHS = ["description", "metadata.description"]
@@ -76,7 +69,6 @@ def _first(data: Any, paths: Iterable[str], default: Any = None) -> Any:
 
 def _values_at_key(data: Any, key: str) -> list[Any]:
     results: list[Any] = []
-
     if isinstance(data, dict):
         for current_key, value in data.items():
             if current_key == key:
@@ -85,8 +77,23 @@ def _values_at_key(data: Any, key: str) -> list[Any]:
     elif isinstance(data, list):
         for item in data:
             results.extend(_values_at_key(item, key))
-
     return results
+
+
+def _compact(values: Iterable[Any], limit: int = 10) -> list[Any]:
+    result: list[Any] = []
+    seen: set[str] = set()
+    for value in values:
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            marker = repr(item)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            result.append(item)
+            if len(result) >= limit:
+                return result
+    return result
 
 
 def _contains_any_path(data: Any, paths: Iterable[str], query: str) -> bool:
@@ -98,30 +105,24 @@ def _contains_any_path(data: Any, paths: Iterable[str], query: str) -> bool:
 
 def _equals_any_path(data: Any, paths: Iterable[str], expected: str) -> bool:
     expected_cf = expected.casefold()
-
     for path in paths:
         value = get_json_value(data, path, None)
         if isinstance(value, str) and value.casefold() == expected_cf:
             return True
-
     return False
 
 
 def _recursive_string_match(data: Any, query: str) -> bool:
     query_cf = query.casefold()
-
     if isinstance(data, str):
         return query_cf in data.casefold()
-
     if isinstance(data, dict):
         return any(
             query_cf in str(key).casefold() or _recursive_string_match(value, query)
             for key, value in data.items()
         )
-
     if isinstance(data, list):
         return any(_recursive_string_match(value, query) for value in data)
-
     return False
 
 
@@ -134,9 +135,13 @@ def _api_summary(document: dict[str, Any]) -> dict[str, Any]:
         "version": _first(data, API_VERSION_PATHS),
         "description": _first(data, API_DESCRIPTION_PATHS),
         "state": _first(data, API_STATE_PATHS),
-        "virtual_hosts": _values_at_key(data, "virtual_hosts") or _values_at_key(data, "virtualHosts"),
-        "paths": _values_at_key(data, "path"),
-        "endpoints": _values_at_key(data, "target") + _values_at_key(data, "url"),
+        "virtual_hosts": _compact(
+            _values_at_key(data, "virtual_hosts") + _values_at_key(data, "virtualHosts")
+        ),
+        "paths": _compact(_values_at_key(data, "path")),
+        "endpoints": _compact(
+            _values_at_key(data, "target") + _values_at_key(data, "url")
+        ),
     }
 
 
@@ -188,7 +193,7 @@ def search_api_by_name(name: str) -> list[dict[str, Any]]:
 
 @mcp.tool()
 def search_api_by_path(path: str) -> list[dict[str, Any]]:
-    """Find APIs whose definition contains a matching context path / virtual-host path."""
+    """Find APIs containing a context path or virtual-host path."""
     logger.info("search_api_by_path path=%s", path)
     return _search_api(lambda data: _recursive_string_match(data, path))
 
@@ -272,17 +277,15 @@ def search_application_by_api_id(api_id: str) -> list[dict[str, Any]]:
 def search_application_by_subscription_id(subscription_id: str) -> list[dict[str, Any]]:
     """Find applications referencing a subscription id."""
     logger.info("search_application_by_subscription_id subscription_id=%s", subscription_id)
-    return _search_application(
-        lambda data: _recursive_string_match(data, subscription_id)
-    )
+    return _search_application(lambda data: _recursive_string_match(data, subscription_id))
 
 
 @mcp.tool()
 def search_repository(query: str, max_results: int = 25) -> list[dict[str, Any]]:
-    """Generic fallback search across all JSON files in the Gravitee repository.
+    """Generic fallback search across all JSON files.
 
-    Returns matching JSON paths/values instead of full definitions. Prefer the
-    domain-specific search tools when possible.
+    Returns matching JSON paths/values, not full definitions. Prefer the
+    domain-specific search tools whenever possible.
     """
     logger.info("search_repository query=%s max_results=%s", query, max_results)
     results = find_string_anywhere_in_json(
@@ -322,10 +325,10 @@ def list_applications(limit: int = 100) -> list[dict[str, Any]]:
 
 @mcp.tool()
 def get_api_definition(file_path: str) -> Any:
-    """Return the complete API JSON definition for a repository-relative file path.
+    """Return the complete API JSON definition by repository-relative file path.
 
-    Use this only after a search tool identified the relevant API and full detail
-    is actually required.
+    Use after a search tool has identified the relevant API and full detail is
+    actually required.
     """
     logger.info("get_api_definition file_path=%s", file_path)
     return get_json(REPO_PATH, file_path)
@@ -333,7 +336,7 @@ def get_api_definition(file_path: str) -> Any:
 
 @mcp.tool()
 def get_application_definition(file_path: str) -> Any:
-    """Return the complete application JSON definition for a repository-relative path."""
+    """Return the complete application JSON definition by relative file path."""
     logger.info("get_application_definition file_path=%s", file_path)
     return get_json(REPO_PATH, file_path)
 
@@ -347,7 +350,7 @@ def get_json_definition(file_path: str) -> Any:
 
 @mcp.tool()
 def get_json_fields(file_path: str, fields: list[str]) -> dict[str, Any]:
-    """Read only selected dot-path fields from a JSON definition.
+    """Read selected dot-path fields from a JSON definition.
 
     Prefer this over get_json_definition when only a few fields are required.
     Example fields: ['id', 'name', 'proxy.virtual_hosts', 'plans'].

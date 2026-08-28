@@ -659,7 +659,7 @@ def summarize_json_documents(
     results = []
 
     for document in documents:
-        result = {"path": document["path"]}
+        result = {"x-filepath": document["path"]}
         result.update(select_json_fields(document["data"], fields))
         results.append(result)
 

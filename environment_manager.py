@@ -27,7 +27,11 @@ class SearchTarget:
     def patterns(self, patterns: Iterable[str]) -> list[str]:
         """Prefix zone-relative glob patterns with INT/EXT directory."""
         prefix = self.zone_directory.strip("/\\")
-        return [f"{prefix}/{pattern.lstrip('/\\')}" for pattern in patterns]
+        result: list[str] = []
+        for pattern in patterns:
+            normalized = pattern.lstrip("/\\")
+            result.append(f"{prefix}/{normalized}")
+        return result
 
 
 class EnvironmentManager:
@@ -103,7 +107,6 @@ class EnvironmentManager:
 
         self._validate_repository()
         self.initialize()
-        # Validate configured default only after stage/zone config is loaded.
         self.resolve_scope(self.default_scope)
 
     def _run_git(
@@ -167,7 +170,6 @@ class EnvironmentManager:
         if self.refresh_on_startup:
             fetch = self._run_git("fetch", self.remote, "--prune", check=False)
             if fetch.returncode != 0:
-                # An already-cloned repository should remain usable offline.
                 logger.warning(
                     "git fetch failed; using existing refs. stderr=%s",
                     fetch.stderr.strip(),
@@ -213,7 +215,7 @@ class EnvironmentManager:
             self._prepare_stage(stage, stage_config["branch"])
 
     def resolve_scope(self, scope: str | None = None) -> list[SearchTarget]:
-        """Resolve `stage_zone`, `stage`, or `all` into concrete targets."""
+        """Resolve stage_zone, stage, or all into concrete targets."""
         value = (scope or self.default_scope).strip().lower()
 
         pairs: list[tuple[str, str]] = []
@@ -288,8 +290,6 @@ class EnvironmentManager:
                 f"scope '{scope or self.default_scope}'"
             )
 
-        # stage scope contains two zones pointing to the same worktree; filepath
-        # itself chooses one zone, so the result is naturally de-duplicated here.
         unique: dict[str, SearchTarget] = {}
         for target in matching:
             unique[target.stage] = target

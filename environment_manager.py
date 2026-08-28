@@ -60,7 +60,10 @@ class EnvironmentManager:
 
         self.default_scope = config.get("default_scope", "test_int")
         self.remote = config.get("remote", "origin")
-        self.refresh_on_startup = config.get("refresh_on_startup", True)
+        self.pull_on_startup = config.get(
+            "pull_on_startup",
+            config.get("refresh_on_startup", True),
+        )
         raw_worktree_root = config.get("worktree_root", "./.worktrees")
         self.stages = config.get("stages", {})
         self.zones = config.get("zones", {})
@@ -69,8 +72,10 @@ class EnvironmentManager:
             raise ValueError("environments.default_scope must be a non-empty string")
         if not isinstance(self.remote, str) or not self.remote:
             raise ValueError("environments.remote must be a non-empty string")
-        if not isinstance(self.refresh_on_startup, bool):
-            raise ValueError("environments.refresh_on_startup must be boolean")
+        if not isinstance(self.pull_on_startup, bool):
+            raise ValueError(
+                "environments.pull_on_startup/refresh_on_startup must be boolean"
+            )
         if not isinstance(raw_worktree_root, str) or not raw_worktree_root:
             raise ValueError("environments.worktree_root must be a non-empty string")
         if not isinstance(self.stages, dict) or not self.stages:
@@ -101,15 +106,10 @@ class EnvironmentManager:
         repository_id = sha256(str(self.repository).encode("utf-8")).hexdigest()[:12]
 
         if root.is_absolute():
-            # Keep absolute roots safe for possible use by several repositories.
             self.worktree_root = (root / repository_id).resolve()
             self._legacy_worktree_root = self.worktree_root
         else:
-            # Relative roots belong to the repository being inspected.
             self.worktree_root = (self.repository / root).resolve()
-            # Previous versions resolved the same relative root against the MCP
-            # server directory and added a repository hash. Keep that location
-            # so we can migrate our already-created worktrees automatically.
             self._legacy_worktree_root = (
                 self.base_dir / root / repository_id
             ).resolve()
@@ -157,17 +157,17 @@ class EnvironmentManager:
         logger.info("Git repository validated: %s", self.repository)
 
     def _ensure_worktree_root_excluded(self) -> None:
-        """Hide managed nested worktrees from the source repo's git status.
-
-        Uses .git/info/exclude, so the target repository's tracked .gitignore is
-        not modified.
-        """
+        """Hide managed nested worktrees from the source repo's git status."""
         try:
             relative = self.worktree_root.relative_to(self.repository)
         except ValueError:
             return
 
-        git_path = self._run_git("rev-parse", "--git-path", "info/exclude").stdout.strip()
+        git_path = self._run_git(
+            "rev-parse",
+            "--git-path",
+            "info/exclude",
+        ).stdout.strip()
         exclude_file = Path(git_path)
         if not exclude_file.is_absolute():
             exclude_file = (self.repository / exclude_file).resolve()
@@ -232,7 +232,6 @@ class EnvironmentManager:
                     result.stderr.strip(),
                 )
 
-        # Best-effort cleanup of empty legacy directories only.
         current = self._legacy_worktree_root
         for _ in range(2):
             try:
@@ -265,19 +264,62 @@ class EnvironmentManager:
             f"Neither '{remote_ref}' nor local ref '{branch}' exists in {self.repository}"
         )
 
+    def _fetch_remote(self) -> None:
+        """Fetch current remote refs used by the managed worktrees."""
+        fetch = self._run_git("fetch", self.remote, "--prune", check=False)
+        if fetch.returncode != 0:
+            raise RuntimeError(f"git fetch failed: {fetch.stderr.strip()}")
+        logger.info("Git fetch completed for remote=%s", self.remote)
+
+    def _scope_pairs(self, scope: str | None = None) -> list[tuple[str, str]]:
+        value = (scope or self.default_scope).strip().lower()
+
+        if value == "all":
+            return [
+                (stage, zone)
+                for stage in self.stages
+                for zone in self.zones
+            ]
+
+        if value in self.stages:
+            return [(value, zone) for zone in self.zones]
+
+        if "_" not in value:
+            raise ValueError(
+                f"Unknown scope '{value}'. Expected stage_zone, stage, or all"
+            )
+
+        stage, zone = value.rsplit("_", 1)
+        if stage not in self.stages or zone not in self.zones:
+            raise ValueError(
+                f"Unknown scope '{value}'. Stages={list(self.stages)}, "
+                f"zones={list(self.zones)}"
+            )
+        return [(stage, zone)]
+
+    def _stages_for_scope(self, scope: str | None = None) -> list[str]:
+        """Resolve a search-style scope to unique Git stages/branches."""
+        result: list[str] = []
+        seen: set[str] = set()
+        for stage, _ in self._scope_pairs(scope):
+            if stage not in seen:
+                seen.add(stage)
+                result.append(stage)
+        return result
+
     def initialize(self) -> None:
-        """Create managed worktrees and optionally refresh remote refs first."""
+        """Create managed worktrees and pull remote state on server startup."""
         self._run_git("worktree", "prune", check=False)
 
-        if self.refresh_on_startup:
-            fetch = self._run_git("fetch", self.remote, "--prune", check=False)
-            if fetch.returncode != 0:
+        if self.pull_on_startup:
+            try:
+                self._fetch_remote()
+                logger.info("Startup Git pull-equivalent completed")
+            except RuntimeError as exc:
                 logger.warning(
-                    "git fetch failed; using existing refs. stderr=%s",
-                    fetch.stderr.strip(),
+                    "Startup Git fetch failed; using existing refs. error=%s",
+                    exc,
                 )
-            else:
-                logger.info("Git fetch completed for remote=%s", self.remote)
 
         for stage, stage_config in self.stages.items():
             self._prepare_stage(stage, stage_config["branch"])
@@ -308,39 +350,58 @@ class EnvironmentManager:
         self._commit_shas[stage] = commit_sha
         logger.info("Stage ready stage=%s branch=%s commit=%s", stage, branch, commit_sha)
 
+    def pull(self, scope: str | None = None) -> list[dict[str, Any]]:
+        """Pull selected logical environments from remote without checkout.
+
+        Managed worktrees are detached, so the safe equivalent of git pull is:
+        fetch the remote once, then hard-reset each selected stage worktree to
+        origin/<configured branch>. A stage_zone scope updates its whole stage,
+        because INT and EXT live in the same Git branch.
+        """
+        requested_scope = (scope or self.default_scope).strip().lower()
+        selected_stages = self._stages_for_scope(requested_scope)
+        before = {
+            stage: self._commit_shas.get(stage)
+            for stage in selected_stages
+        }
+
+        logger.info(
+            "Git pull requested scope=%s stages=%s",
+            requested_scope,
+            selected_stages,
+        )
+        self._fetch_remote()
+
+        results: list[dict[str, Any]] = []
+        for stage in selected_stages:
+            stage_config = self.stages[stage]
+            branch = stage_config["branch"]
+            previous_commit = before.get(stage)
+            self._prepare_stage(stage, branch)
+            current_commit = self._commit_shas[stage]
+            results.append(
+                {
+                    "requested_scope": requested_scope,
+                    "stage": stage,
+                    "branch": branch,
+                    "remote": self.remote,
+                    "remote_ref": f"{self.remote}/{branch}",
+                    "previous_commit": previous_commit,
+                    "commit": current_commit,
+                    "changed": previous_commit != current_commit,
+                    "worktree_path": str(self._worktrees[stage]),
+                }
+            )
+
+        return results
+
     def refresh(self) -> None:
-        """Fetch remote changes and reset all managed worktrees to stage refs."""
-        fetch = self._run_git("fetch", self.remote, "--prune", check=False)
-        if fetch.returncode != 0:
-            raise RuntimeError(f"git fetch failed: {fetch.stderr.strip()}")
-        for stage, stage_config in self.stages.items():
-            self._prepare_stage(stage, stage_config["branch"])
+        """Backward-compatible refresh of every managed environment."""
+        self.pull("all")
 
     def resolve_scope(self, scope: str | None = None) -> list[SearchTarget]:
         """Resolve stage_zone, stage, or all into concrete targets."""
-        value = (scope or self.default_scope).strip().lower()
-
-        pairs: list[tuple[str, str]] = []
-        if value == "all":
-            pairs = [
-                (stage, zone)
-                for stage in self.stages
-                for zone in self.zones
-            ]
-        elif value in self.stages:
-            pairs = [(value, zone) for zone in self.zones]
-        else:
-            if "_" not in value:
-                raise ValueError(
-                    f"Unknown scope '{value}'. Expected stage_zone, stage, or all"
-                )
-            stage, zone = value.rsplit("_", 1)
-            if stage not in self.stages or zone not in self.zones:
-                raise ValueError(
-                    f"Unknown scope '{value}'. Stages={list(self.stages)}, "
-                    f"zones={list(self.zones)}"
-                )
-            pairs = [(stage, zone)]
+        pairs = self._scope_pairs(scope)
 
         targets: list[SearchTarget] = []
         for stage, zone in pairs:

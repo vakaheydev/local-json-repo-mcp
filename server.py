@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -39,11 +40,16 @@ logger.info(
     "API_REPOSITORY_PATH=%r",
     os.getenv("API_REPOSITORY_PATH"),
 )
+logger.info(
+    "MCP_CONFIG_PATH=%r",
+    os.getenv("MCP_CONFIG_PATH"),
+)
 
 
 try:
     logger.debug("Importing FastMCP")
     from mcp.server.fastmcp import FastMCP
+
     logger.info("FastMCP import successful")
 except Exception:
     logger.exception(
@@ -64,6 +70,7 @@ try:
         select_json_fields,
         string_contains,
     )
+
     logger.info("json_repository import successful")
 except Exception:
     logger.exception("Failed to import json_repository utilities")
@@ -95,38 +102,86 @@ except Exception:
     raise
 
 
-API_PATTERNS = ["**/*.Api.json", "**/*api*.json"]
-APPLICATION_PATTERNS = [
-    "**/*.Application.json",
-    "**/*application*.json",
-    "**/*app*.json",
-]
-ALL_JSON_PATTERNS = "**/*.json"
-EXCLUDE_PATTERNS = [
-    "**/.git/**",
-    "**/node_modules/**",
-    "**/.venv/**",
-    "**/venv/**",
-]
+def _load_config() -> dict[str, Any]:
+    default_path = Path(__file__).resolve().with_name("config.json")
+    raw_path = os.getenv("MCP_CONFIG_PATH") or str(default_path)
+    config_path = Path(raw_path).expanduser().resolve()
 
-API_ID_PATHS = ["id", "api", "api_id", "apiId", "metadata.id"]
-API_NAME_PATHS = ["name", "metadata.name"]
-API_VERSION_PATHS = ["version", "apiVersion", "metadata.version"]
-API_DESCRIPTION_PATHS = ["description", "metadata.description"]
-API_STATE_PATHS = ["lifecycle_state", "lifecycleState", "state"]
-APP_ID_PATHS = ["id", "application", "application_id", "applicationId", "metadata.id"]
-APP_NAME_PATHS = ["name", "metadata.name"]
-APP_DESCRIPTION_PATHS = ["description", "metadata.description"]
-APP_CLIENT_ID_PATHS = [
-    "client_id",
-    "clientId",
-    "settings.client_id",
-    "settings.clientId",
-    "settings.oauth.client_id",
-    "settings.oauth.clientId",
-    "settings.app.client_id",
-    "settings.app.clientId",
-]
+    logger.info("Loading MCP config: %s", config_path)
+
+    try:
+        with config_path.open("r", encoding="utf-8") as file:
+            config = json.load(file)
+    except Exception:
+        logger.exception("Failed to load MCP config: %s", config_path)
+        raise
+
+    if not isinstance(config, dict):
+        raise ValueError("MCP config root must be a JSON object")
+
+    logger.info("MCP config loaded successfully")
+    return config
+
+
+def _require_dict(parent: dict[str, Any], key: str) -> dict[str, Any]:
+    value = parent.get(key)
+    if not isinstance(value, dict):
+        raise ValueError(f"Config field '{key}' must be an object")
+    return value
+
+
+def _require_string_list(parent: dict[str, Any], key: str) -> list[str]:
+    value = parent.get(key)
+
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"Config field '{key}' must be a non-empty array")
+
+    if not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"Config field '{key}' must contain only non-empty strings")
+
+    return value
+
+
+try:
+    CONFIG = _load_config()
+
+    FILE_PATTERNS = _require_dict(CONFIG, "file_patterns")
+    API_PATTERNS = _require_string_list(FILE_PATTERNS, "apis")
+    APPLICATION_PATTERNS = _require_string_list(FILE_PATTERNS, "applications")
+    ALL_JSON_PATTERNS = _require_string_list(FILE_PATTERNS, "all_json")
+    EXCLUDE_PATTERNS = _require_string_list(FILE_PATTERNS, "exclude")
+
+    FIELD_PATHS = _require_dict(CONFIG, "field_paths")
+    API_FIELD_PATHS = _require_dict(FIELD_PATHS, "api")
+    APPLICATION_FIELD_PATHS = _require_dict(FIELD_PATHS, "application")
+
+    API_ID_PATHS = _require_string_list(API_FIELD_PATHS, "id")
+    API_NAME_PATHS = _require_string_list(API_FIELD_PATHS, "name")
+    API_VERSION_PATHS = _require_string_list(API_FIELD_PATHS, "version")
+    API_DESCRIPTION_PATHS = _require_string_list(API_FIELD_PATHS, "description")
+    API_STATE_PATHS = _require_string_list(API_FIELD_PATHS, "state")
+
+    APP_ID_PATHS = _require_string_list(APPLICATION_FIELD_PATHS, "id")
+    APP_NAME_PATHS = _require_string_list(APPLICATION_FIELD_PATHS, "name")
+    APP_DESCRIPTION_PATHS = _require_string_list(APPLICATION_FIELD_PATHS, "description")
+    APP_CLIENT_ID_PATHS = _require_string_list(APPLICATION_FIELD_PATHS, "client_id")
+    APP_TYPE_PATHS = _require_string_list(APPLICATION_FIELD_PATHS, "type")
+
+    SUMMARY_CONFIG = CONFIG.get("summary", {})
+    if not isinstance(SUMMARY_CONFIG, dict):
+        raise ValueError("Config field 'summary' must be an object")
+
+    SUMMARY_MAX_VALUES = SUMMARY_CONFIG.get("max_values_per_field", 10)
+    if not isinstance(SUMMARY_MAX_VALUES, int) or SUMMARY_MAX_VALUES <= 0:
+        raise ValueError("summary.max_values_per_field must be a positive integer")
+
+    logger.info("API file patterns: %s", API_PATTERNS)
+    logger.info("Application file patterns: %s", APPLICATION_PATTERNS)
+    logger.info("Excluded file patterns: %s", EXCLUDE_PATTERNS)
+    logger.info("Summary max values per field: %s", SUMMARY_MAX_VALUES)
+except Exception:
+    logger.exception("Invalid MCP configuration")
+    raise
 
 
 def _first(data: Any, paths: Iterable[str], default: Any = None) -> Any:
@@ -139,6 +194,7 @@ def _first(data: Any, paths: Iterable[str], default: Any = None) -> Any:
 
 def _values_at_key(data: Any, key: str) -> list[Any]:
     results: list[Any] = []
+
     if isinstance(data, dict):
         for current_key, value in data.items():
             if current_key == key:
@@ -147,22 +203,29 @@ def _values_at_key(data: Any, key: str) -> list[Any]:
     elif isinstance(data, list):
         for item in data:
             results.extend(_values_at_key(item, key))
+
     return results
 
 
-def _compact(values: Iterable[Any], limit: int = 10) -> list[Any]:
+def _compact(values: Iterable[Any], limit: int | None = None) -> list[Any]:
+    limit = limit or SUMMARY_MAX_VALUES
     result: list[Any] = []
     seen: set[str] = set()
+
     for value in values:
         items = value if isinstance(value, list) else [value]
+
         for item in items:
             marker = repr(item)
             if marker in seen:
                 continue
+
             seen.add(marker)
             result.append(item)
+
             if len(result) >= limit:
                 return result
+
     return result
 
 
@@ -175,29 +238,36 @@ def _contains_any_path(data: Any, paths: Iterable[str], query: str) -> bool:
 
 def _equals_any_path(data: Any, paths: Iterable[str], expected: str) -> bool:
     expected_cf = expected.casefold()
+
     for path in paths:
         value = get_json_value(data, path, None)
         if isinstance(value, str) and value.casefold() == expected_cf:
             return True
+
     return False
 
 
 def _recursive_string_match(data: Any, query: str) -> bool:
     query_cf = query.casefold()
+
     if isinstance(data, str):
         return query_cf in data.casefold()
+
     if isinstance(data, dict):
         return any(
             query_cf in str(key).casefold() or _recursive_string_match(value, query)
             for key, value in data.items()
         )
+
     if isinstance(data, list):
         return any(_recursive_string_match(value, query) for value in data)
+
     return False
 
 
 def _api_summary(document: dict[str, Any]) -> dict[str, Any]:
     data = document["data"]
+
     return {
         "path": document["path"],
         "id": _first(data, API_ID_PATHS),
@@ -206,7 +276,8 @@ def _api_summary(document: dict[str, Any]) -> dict[str, Any]:
         "description": _first(data, API_DESCRIPTION_PATHS),
         "state": _first(data, API_STATE_PATHS),
         "virtual_hosts": _compact(
-            _values_at_key(data, "virtual_hosts") + _values_at_key(data, "virtualHosts")
+            _values_at_key(data, "virtual_hosts")
+            + _values_at_key(data, "virtualHosts")
         ),
         "paths": _compact(_values_at_key(data, "path")),
         "endpoints": _compact(
@@ -217,13 +288,14 @@ def _api_summary(document: dict[str, Any]) -> dict[str, Any]:
 
 def _application_summary(document: dict[str, Any]) -> dict[str, Any]:
     data = document["data"]
+
     return {
         "path": document["path"],
         "id": _first(data, APP_ID_PATHS),
         "name": _first(data, APP_NAME_PATHS),
         "description": _first(data, APP_DESCRIPTION_PATHS),
         "client_id": _first(data, APP_CLIENT_ID_PATHS),
-        "type": _first(data, ["type", "settings.type"]),
+        "type": _first(data, APP_TYPE_PATHS),
     }
 
 

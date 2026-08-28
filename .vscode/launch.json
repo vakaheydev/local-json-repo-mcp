@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run real repository tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "unittest",
+      "args": [
+        "-v",
+        "test_server.py"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "TEST_GRAVITEE_REPOSITORY_PATH": "${input:graviteeRepoPath}"
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "graviteeRepoPath",
+      "type": "promptString",
+      "description": "Path to the real Gravitee repository"
+    }
+  ]
+}

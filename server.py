@@ -3,16 +3,14 @@ from __future__ import annotations
 import json
 import os
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Iterable
 
-# IMPORTANT: initialize our logger before importing MCP or repository modules.
-# This lets us capture startup failures such as a missing/incompatible `mcp`
-# package instead of dying before any useful diagnostic is written.
+# Initialize logging before MCP imports so startup failures are captured.
 try:
     from logger import logger
 except Exception:
-    # Last-resort stderr logger. Never use stdout: it belongs to MCP stdio.
     import logging
 
     logging.basicConfig(
@@ -32,29 +30,25 @@ logger.info("Platform: %s", sys.platform)
 logger.info("PID: %s", os.getpid())
 logger.info("Current working directory: %s", Path.cwd())
 logger.info("server.py location: %s", Path(__file__).resolve())
-logger.info(
-    "GRAVITEE_REPOSITORY_PATH=%r",
-    os.getenv("GRAVITEE_REPOSITORY_PATH"),
-)
-logger.info(
-    "API_REPOSITORY_PATH=%r",
-    os.getenv("API_REPOSITORY_PATH"),
-)
-logger.info(
-    "MCP_CONFIG_PATH=%r",
-    os.getenv("MCP_CONFIG_PATH"),
-)
+logger.info("GRAVITEE_REPOSITORY_PATH=%r", os.getenv("GRAVITEE_REPOSITORY_PATH"))
+logger.info("API_REPOSITORY_PATH=%r", os.getenv("API_REPOSITORY_PATH"))
+logger.info("MCP_CONFIG_PATH=%r", os.getenv("MCP_CONFIG_PATH"))
+
+try:
+    logger.info("Installed MCP package version: %s", version("mcp"))
+except PackageNotFoundError:
+    logger.warning("Unable to determine installed MCP package version")
 
 
 try:
-    logger.debug("Importing FastMCP")
-    from mcp.server.fastmcp import FastMCP
+    logger.debug("Importing MCPServer from MCP Python SDK v2")
+    from mcp.server.mcpserver import MCPServer
 
-    logger.info("FastMCP import successful")
+    logger.info("MCPServer import successful")
 except Exception:
     logger.exception(
-        "Failed to import FastMCP. Check that the MCP Python SDK is installed "
-        "for this exact Python interpreter: %s",
+        "Failed to import MCPServer from mcp.server.mcpserver. "
+        "This project requires MCP Python SDK 2.x installed for interpreter: %s",
         sys.executable,
     )
     raise
@@ -78,11 +72,11 @@ except Exception:
 
 
 try:
-    logger.debug("Creating FastMCP instance")
-    mcp = FastMCP("gravitee-local-repository")
-    logger.info("FastMCP instance created successfully")
+    logger.debug("Creating MCPServer instance")
+    mcp = MCPServer("gravitee-local-repository")
+    logger.info("MCPServer instance created successfully")
 except Exception:
-    logger.exception("Failed to create FastMCP instance")
+    logger.exception("Failed to create MCPServer instance")
     raise
 
 
@@ -231,7 +225,11 @@ def _compact(values: Iterable[Any], limit: int | None = None) -> list[Any]:
 
 def _contains_any_path(data: Any, paths: Iterable[str], query: str) -> bool:
     return any(
-        string_contains(get_json_value(data, path, None), query, case_sensitive=False)
+        string_contains(
+            get_json_value(data, path, None),
+            query,
+            case_sensitive=False,
+        )
         for path in paths
     )
 
@@ -255,7 +253,8 @@ def _recursive_string_match(data: Any, query: str) -> bool:
 
     if isinstance(data, dict):
         return any(
-            query_cf in str(key).casefold() or _recursive_string_match(value, query)
+            query_cf in str(key).casefold()
+            or _recursive_string_match(value, query)
             for key, value in data.items()
         )
 
@@ -281,7 +280,8 @@ def _api_summary(document: dict[str, Any]) -> dict[str, Any]:
         ),
         "paths": _compact(_values_at_key(data, "path")),
         "endpoints": _compact(
-            _values_at_key(data, "target") + _values_at_key(data, "url")
+            _values_at_key(data, "target")
+            + _values_at_key(data, "url")
         ),
     }
 
@@ -400,7 +400,7 @@ def search_application_by_name(name: str) -> list[dict[str, Any]]:
 
 @mcp.tool()
 def search_application_by_client_id(client_id: str) -> list[dict[str, Any]]:
-    """Find applications by OAuth/client id across common Gravitee field layouts."""
+    """Find applications by OAuth/client id across configured field layouts."""
     logger.info("search_application_by_client_id client_id=%s", client_id)
     return _search_application(
         lambda data: _equals_any_path(data, APP_CLIENT_ID_PATHS, client_id)
@@ -419,14 +419,16 @@ def search_application_by_api_id(api_id: str) -> list[dict[str, Any]]:
 def search_application_by_subscription_id(subscription_id: str) -> list[dict[str, Any]]:
     """Find applications referencing a subscription id."""
     logger.info("search_application_by_subscription_id subscription_id=%s", subscription_id)
-    return _search_application(lambda data: _recursive_string_match(data, subscription_id))
+    return _search_application(
+        lambda data: _recursive_string_match(data, subscription_id)
+    )
 
 
 @mcp.tool()
 def search_repository(query: str, max_results: int = 25) -> list[dict[str, Any]]:
     """Generic fallback search across all JSON files.
 
-    Returns matching JSON paths/values, not full definitions. Prefer the
+    Returns matching JSON paths/values rather than full definitions. Prefer
     domain-specific search tools whenever possible.
     """
     logger.info("search_repository query=%s max_results=%s", query, max_results)
@@ -467,10 +469,10 @@ def list_applications(limit: int = 100) -> list[dict[str, Any]]:
 
 @mcp.tool()
 def get_api_definition(file_path: str) -> Any:
-    """Return the complete API JSON definition by repository-relative file path.
+    """Return the complete API JSON definition by repository-relative path.
 
-    Use after a search tool has identified the relevant API and full detail is
-    actually required.
+    Use this only after a search tool has identified the relevant API and the
+    full definition is actually required.
     """
     logger.info("get_api_definition file_path=%s", file_path)
     return get_json(REPO_PATH, file_path)
@@ -495,7 +497,6 @@ def get_json_fields(file_path: str, fields: list[str]) -> dict[str, Any]:
     """Read selected dot-path fields from a JSON definition.
 
     Prefer this over get_json_definition when only a few fields are required.
-    Example fields: ['id', 'name', 'proxy.virtual_hosts', 'plans'].
     """
     logger.info("get_json_fields file_path=%s fields=%s", file_path, fields)
     data = get_json(REPO_PATH, file_path)
@@ -504,7 +505,7 @@ def get_json_fields(file_path: str, fields: list[str]) -> dict[str, Any]:
 
 @mcp.tool()
 def get_json_value_by_path(file_path: str, json_path: str) -> Any:
-    """Return one nested JSON value using dot notation, e.g. proxy.virtual_hosts.0.path."""
+    """Return one nested JSON value using dot notation."""
     logger.info(
         "get_json_value_by_path file_path=%s json_path=%s",
         file_path,
@@ -519,7 +520,7 @@ logger.info("Tool registration completed; server module loaded successfully")
 
 if __name__ == "__main__":
     logger.info("Entering __main__")
-    logger.info("Starting MCP transport: stdio")
+    logger.info("Starting MCP 2.x transport: stdio")
     logger.info("Repository used by tools: %s", REPO_PATH)
 
     if not REPO_PATH.exists():
@@ -529,10 +530,7 @@ if __name__ == "__main__":
             REPO_PATH,
         )
     elif not REPO_PATH.is_dir():
-        logger.warning(
-            "Configured repository path is not a directory: %s",
-            REPO_PATH,
-        )
+        logger.warning("Configured repository path is not a directory: %s", REPO_PATH)
 
     try:
         mcp.run()

@@ -1,29 +1,99 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-from mcp.server.fastmcp import FastMCP
+# IMPORTANT: initialize our logger before importing MCP or repository modules.
+# This lets us capture startup failures such as a missing/incompatible `mcp`
+# package instead of dying before any useful diagnostic is written.
+try:
+    from logger import logger
+except Exception:
+    # Last-resort stderr logger. Never use stdout: it belongs to MCP stdio.
+    import logging
 
-from json_repository import (
-    find_json_documents,
-    find_string_anywhere_in_json,
-    get_json,
-    get_json_value,
-    select_json_fields,
-    string_contains,
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s | %(levelname)s | bootstrap | %(message)s",
+        stream=sys.stderr,
+    )
+    logger = logging.getLogger("local-json-repo-mcp-bootstrap")
+    logger.exception("Failed to initialize logger.py; using stderr fallback")
+
+
+logger.info("=" * 72)
+logger.info("Starting local-json-repo-mcp bootstrap")
+logger.info("Python executable: %s", sys.executable)
+logger.info("Python version: %s", sys.version.replace("\n", " "))
+logger.info("Platform: %s", sys.platform)
+logger.info("PID: %s", os.getpid())
+logger.info("Current working directory: %s", Path.cwd())
+logger.info("server.py location: %s", Path(__file__).resolve())
+logger.info(
+    "GRAVITEE_REPOSITORY_PATH=%r",
+    os.getenv("GRAVITEE_REPOSITORY_PATH"),
 )
-from logger import logger
+logger.info(
+    "API_REPOSITORY_PATH=%r",
+    os.getenv("API_REPOSITORY_PATH"),
+)
 
 
-mcp = FastMCP("gravitee-local-repository")
+try:
+    logger.debug("Importing FastMCP")
+    from mcp.server.fastmcp import FastMCP
+    logger.info("FastMCP import successful")
+except Exception:
+    logger.exception(
+        "Failed to import FastMCP. Check that the MCP Python SDK is installed "
+        "for this exact Python interpreter: %s",
+        sys.executable,
+    )
+    raise
 
-REPO_PATH = Path(
+
+try:
+    logger.debug("Importing json_repository utilities")
+    from json_repository import (
+        find_json_documents,
+        find_string_anywhere_in_json,
+        get_json,
+        get_json_value,
+        select_json_fields,
+        string_contains,
+    )
+    logger.info("json_repository import successful")
+except Exception:
+    logger.exception("Failed to import json_repository utilities")
+    raise
+
+
+try:
+    logger.debug("Creating FastMCP instance")
+    mcp = FastMCP("gravitee-local-repository")
+    logger.info("FastMCP instance created successfully")
+except Exception:
+    logger.exception("Failed to create FastMCP instance")
+    raise
+
+
+_raw_repo_path = (
     os.getenv("GRAVITEE_REPOSITORY_PATH")
     or os.getenv("API_REPOSITORY_PATH")
     or "."
-).expanduser().resolve()
+)
+
+try:
+    REPO_PATH = Path(_raw_repo_path).expanduser().resolve()
+    logger.info("Resolved Gravitee repository path: %s", REPO_PATH)
+    logger.info("Repository exists: %s", REPO_PATH.exists())
+    logger.info("Repository is directory: %s", REPO_PATH.is_dir())
+except Exception:
+    logger.exception("Failed to resolve repository path: %r", _raw_repo_path)
+    raise
+
 
 API_PATTERNS = ["**/*.Api.json", "**/*api*.json"]
 APPLICATION_PATTERNS = [
@@ -372,6 +442,32 @@ def get_json_value_by_path(file_path: str, json_path: str) -> Any:
     return get_json_value(data, json_path)
 
 
+logger.info("Tool registration completed; server module loaded successfully")
+
+
 if __name__ == "__main__":
-    logger.info("Starting MCP server repository=%s", REPO_PATH)
-    mcp.run()
+    logger.info("Entering __main__")
+    logger.info("Starting MCP transport: stdio")
+    logger.info("Repository used by tools: %s", REPO_PATH)
+
+    if not REPO_PATH.exists():
+        logger.warning(
+            "Configured repository does not exist. Server can still start, "
+            "but repository tools will fail until the path is corrected: %s",
+            REPO_PATH,
+        )
+    elif not REPO_PATH.is_dir():
+        logger.warning(
+            "Configured repository path is not a directory: %s",
+            REPO_PATH,
+        )
+
+    try:
+        mcp.run()
+        logger.info("mcp.run() returned normally")
+    except KeyboardInterrupt:
+        logger.info("MCP server stopped by KeyboardInterrupt")
+        raise
+    except BaseException:
+        logger.exception("MCP server crashed during mcp.run()")
+        raise

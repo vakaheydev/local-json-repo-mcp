@@ -37,9 +37,12 @@ class SearchTarget:
 class EnvironmentManager:
     """Maintains read-only Git worktrees for logical deployment stages.
 
-    The source repository is never checked out or switched by this class.
-    Each configured stage gets a detached worktree that is automatically
-    created and refreshed from the configured Git branch.
+    The source repository is never switched by this class. Each configured
+    stage gets a detached worktree that is automatically created and refreshed
+    from the configured Git branch.
+
+    Relative worktree_root values are resolved against the target Gravitee
+    repository, not against the MCP server directory.
     """
 
     def __init__(
@@ -95,19 +98,33 @@ class EnvironmentManager:
                 )
 
         root = Path(raw_worktree_root).expanduser()
-        if not root.is_absolute():
-            root = self.base_dir / root
-
         repository_id = sha256(str(self.repository).encode("utf-8")).hexdigest()[:12]
-        self.worktree_root = (root / repository_id).resolve()
-        self.worktree_root.mkdir(parents=True, exist_ok=True)
+
+        if root.is_absolute():
+            # Keep absolute roots safe for possible use by several repositories.
+            self.worktree_root = (root / repository_id).resolve()
+            self._legacy_worktree_root = self.worktree_root
+        else:
+            # Relative roots belong to the repository being inspected.
+            self.worktree_root = (self.repository / root).resolve()
+            # Previous versions resolved the same relative root against the MCP
+            # server directory and added a repository hash. Keep that location
+            # so we can migrate our already-created worktrees automatically.
+            self._legacy_worktree_root = (
+                self.base_dir / root / repository_id
+            ).resolve()
 
         self._worktrees: dict[str, Path] = {}
         self._commit_shas: dict[str, str] = {}
 
         self._validate_repository()
+        self._ensure_worktree_root_excluded()
+        self.worktree_root.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_worktrees()
         self.initialize()
         self.resolve_scope(self.default_scope)
+
+        logger.info("Managed worktree root: %s", self.worktree_root)
 
     def _run_git(
         self,
@@ -138,6 +155,91 @@ class EnvironmentManager:
             raise FileNotFoundError(f"Repository does not exist: {self.repository}")
         self._run_git("rev-parse", "--git-dir")
         logger.info("Git repository validated: %s", self.repository)
+
+    def _ensure_worktree_root_excluded(self) -> None:
+        """Hide managed nested worktrees from the source repo's git status.
+
+        Uses .git/info/exclude, so the target repository's tracked .gitignore is
+        not modified.
+        """
+        try:
+            relative = self.worktree_root.relative_to(self.repository)
+        except ValueError:
+            return
+
+        git_path = self._run_git("rev-parse", "--git-path", "info/exclude").stdout.strip()
+        exclude_file = Path(git_path)
+        if not exclude_file.is_absolute():
+            exclude_file = (self.repository / exclude_file).resolve()
+
+        exclude_file.parent.mkdir(parents=True, exist_ok=True)
+        pattern = f"/{relative.as_posix().strip('/')}/"
+
+        existing = ""
+        if exclude_file.exists():
+            existing = exclude_file.read_text(encoding="utf-8", errors="replace")
+
+        lines = {line.strip() for line in existing.splitlines()}
+        if pattern in lines:
+            return
+
+        with exclude_file.open("a", encoding="utf-8") as file:
+            if existing and not existing.endswith("\n"):
+                file.write("\n")
+            file.write(pattern + "\n")
+
+        logger.info("Added managed worktree root to Git exclude: %s", pattern)
+
+    def _migrate_legacy_worktrees(self) -> None:
+        """Move worktrees created by the previous MCP-relative layout."""
+        if self._legacy_worktree_root == self.worktree_root:
+            return
+        if not self._legacy_worktree_root.exists():
+            return
+
+        logger.info(
+            "Legacy worktree root detected; migrating %s -> %s",
+            self._legacy_worktree_root,
+            self.worktree_root,
+        )
+
+        for stage in self.stages:
+            old_path = (self._legacy_worktree_root / stage).resolve()
+            new_path = (self.worktree_root / stage).resolve()
+
+            if not old_path.exists() or new_path.exists():
+                continue
+
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            result = self._run_git(
+                "worktree",
+                "move",
+                str(old_path),
+                str(new_path),
+                check=False,
+            )
+            if result.returncode == 0:
+                logger.info(
+                    "Migrated managed worktree stage=%s path=%s",
+                    stage,
+                    new_path,
+                )
+            else:
+                logger.warning(
+                    "Could not migrate legacy worktree stage=%s; it will be left "
+                    "untouched. stderr=%s",
+                    stage,
+                    result.stderr.strip(),
+                )
+
+        # Best-effort cleanup of empty legacy directories only.
+        current = self._legacy_worktree_root
+        for _ in range(2):
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
 
     def _ref_exists(self, ref: str) -> bool:
         return self._run_git(

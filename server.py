@@ -7,7 +7,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Iterable
 
-# Initialize logging before MCP imports so startup failures are captured.
+# Initialize logging before MCP/cache imports so startup failures are captured.
 try:
     from logger import logger
 except Exception:
@@ -55,7 +55,7 @@ except Exception:
 
 
 try:
-    logger.debug("Importing json_repository utilities")
+    from cache import build_cache_manager, cached
     from json_repository import (
         find_json_documents,
         find_string_anywhere_in_json,
@@ -65,14 +65,13 @@ try:
         string_contains,
     )
 
-    logger.info("json_repository import successful")
+    logger.info("Repository and cache utilities imported successfully")
 except Exception:
-    logger.exception("Failed to import json_repository utilities")
+    logger.exception("Failed to import repository/cache utilities")
     raise
 
 
 try:
-    logger.debug("Creating MCPServer instance")
     mcp = MCPServer("gravitee-local-repository")
     logger.info("MCPServer instance created successfully")
 except Exception:
@@ -169,10 +168,36 @@ try:
     if not isinstance(SUMMARY_MAX_VALUES, int) or SUMMARY_MAX_VALUES <= 0:
         raise ValueError("summary.max_values_per_field must be a positive integer")
 
+    CACHE_CONFIG = CONFIG.get("cache", {})
+    if not isinstance(CACHE_CONFIG, dict):
+        raise ValueError("Config field 'cache' must be an object")
+
+    cache_namespace = json.dumps(
+        {
+            "repository": str(REPO_PATH),
+            "file_patterns": FILE_PATTERNS,
+            "field_paths": FIELD_PATHS,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+
+    CACHE = build_cache_manager(
+        CACHE_CONFIG,
+        base_dir=Path(__file__).resolve().parent,
+        namespace=cache_namespace,
+    )
+    cache_result = cached(CACHE)
+
     logger.info("API file patterns: %s", API_PATTERNS)
     logger.info("Application file patterns: %s", APPLICATION_PATTERNS)
     logger.info("Excluded file patterns: %s", EXCLUDE_PATTERNS)
     logger.info("Summary max values per field: %s", SUMMARY_MAX_VALUES)
+    logger.info("Cache enabled: %s", CACHE.enabled)
+    logger.info("Cache storage: %s", type(CACHE.storage).__name__)
+    logger.info("Cache default TTL: %ss", CACHE.default_ttl_seconds)
+    logger.info("Cache TTL overrides: %s", CACHE.ttl_by_operation)
+    logger.info("Cache disabled operations: %s", sorted(CACHE.disabled_operations))
 except Exception:
     logger.exception("Invalid MCP configuration")
     raise
@@ -197,6 +222,7 @@ def _values_at_key(data: Any, key: str) -> list[Any]:
     elif isinstance(data, list):
         for item in data:
             results.extend(_values_at_key(item, key))
+
     return results
 
 
@@ -319,6 +345,7 @@ def _search_application(predicate) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_api_by_id(api_id: str) -> list[dict[str, Any]]:
     """Find APIs by exact Gravitee API id. Returns compact summaries only."""
     logger.info("search_api_by_id api_id=%s", api_id)
@@ -326,6 +353,7 @@ def search_api_by_id(api_id: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_api_by_name(name: str) -> list[dict[str, Any]]:
     """Find APIs by partial, case-insensitive name match."""
     logger.info("search_api_by_name name=%s", name)
@@ -333,6 +361,7 @@ def search_api_by_name(name: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_api_by_path(path: str) -> list[dict[str, Any]]:
     """Find APIs containing a context path or virtual-host path."""
     logger.info("search_api_by_path path=%s", path)
@@ -340,6 +369,7 @@ def search_api_by_path(path: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_api_by_backend_url(url: str) -> list[dict[str, Any]]:
     """Find APIs referencing a backend endpoint URL or target."""
     logger.info("search_api_by_backend_url url=%s", url)
@@ -347,6 +377,7 @@ def search_api_by_backend_url(url: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_api_by_policy(policy: str) -> list[dict[str, Any]]:
     """Find APIs containing a policy name/id anywhere in their definition."""
     logger.info("search_api_by_policy policy=%s", policy)
@@ -354,6 +385,7 @@ def search_api_by_policy(policy: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_api_by_tag(tag: str) -> list[dict[str, Any]]:
     """Find APIs containing a Gravitee tag/label."""
     logger.info("search_api_by_tag tag=%s", tag)
@@ -361,6 +393,7 @@ def search_api_by_tag(tag: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_api_by_host(host: str) -> list[dict[str, Any]]:
     """Find APIs referencing a host in virtual hosts, endpoints, or URLs."""
     logger.info("search_api_by_host host=%s", host)
@@ -368,6 +401,7 @@ def search_api_by_host(host: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_api_by_plan_name(plan_name: str) -> list[dict[str, Any]]:
     """Find APIs whose exported definition references a plan name."""
     logger.info("search_api_by_plan_name plan_name=%s", plan_name)
@@ -375,6 +409,7 @@ def search_api_by_plan_name(plan_name: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_api_by_plan_id(plan_id: str) -> list[dict[str, Any]]:
     """Find APIs whose exported definition references a plan id."""
     logger.info("search_api_by_plan_id plan_id=%s", plan_id)
@@ -382,6 +417,7 @@ def search_api_by_plan_id(plan_id: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_application_by_id(application_id: str) -> list[dict[str, Any]]:
     """Find applications by exact application id. Returns compact summaries."""
     logger.info("search_application_by_id application_id=%s", application_id)
@@ -391,6 +427,7 @@ def search_application_by_id(application_id: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_application_by_name(name: str) -> list[dict[str, Any]]:
     """Find applications by partial, case-insensitive name match."""
     logger.info("search_application_by_name name=%s", name)
@@ -398,6 +435,7 @@ def search_application_by_name(name: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_application_by_client_id(client_id: str) -> list[dict[str, Any]]:
     """Find applications by OAuth/client id across configured field layouts."""
     logger.info("search_application_by_client_id client_id=%s", client_id)
@@ -408,6 +446,7 @@ def search_application_by_client_id(client_id: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_application_by_api_id(api_id: str) -> list[dict[str, Any]]:
     """Find application definitions that reference a given API id."""
     logger.info("search_application_by_api_id api_id=%s", api_id)
@@ -415,6 +454,7 @@ def search_application_by_api_id(api_id: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def search_application_by_subscription_id(subscription_id: str) -> list[dict[str, Any]]:
     """Find applications referencing a subscription id."""
     logger.info("search_application_by_subscription_id subscription_id=%s", subscription_id)
@@ -424,6 +464,7 @@ def search_application_by_subscription_id(subscription_id: str) -> list[dict[str
 
 
 @mcp.tool()
+@cache_result
 def search_repository(query: str, max_results: int = 25) -> list[dict[str, Any]]:
     """Generic fallback search across all JSON files.
 
@@ -443,6 +484,7 @@ def search_repository(query: str, max_results: int = 25) -> list[dict[str, Any]]
 
 
 @mcp.tool()
+@cache_result
 def list_apis(limit: int = 100) -> list[dict[str, Any]]:
     """List API definitions as compact summaries without returning full JSON."""
     logger.info("list_apis limit=%s", limit)
@@ -455,6 +497,7 @@ def list_apis(limit: int = 100) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def list_applications(limit: int = 100) -> list[dict[str, Any]]:
     """List application definitions as compact summaries without full JSON."""
     logger.info("list_applications limit=%s", limit)
@@ -467,17 +510,15 @@ def list_applications(limit: int = 100) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@cache_result
 def get_api_definition(file_path: str) -> Any:
-    """Return the complete API JSON definition by repository-relative path.
-
-    Use this only after a search tool has identified the relevant API and the
-    full definition is actually required.
-    """
+    """Return the complete API JSON definition by repository-relative path."""
     logger.info("get_api_definition file_path=%s", file_path)
     return get_json(REPO_PATH, file_path)
 
 
 @mcp.tool()
+@cache_result
 def get_application_definition(file_path: str) -> Any:
     """Return the complete application JSON definition by relative file path."""
     logger.info("get_application_definition file_path=%s", file_path)
@@ -485,6 +526,7 @@ def get_application_definition(file_path: str) -> Any:
 
 
 @mcp.tool()
+@cache_result
 def get_json_definition(file_path: str) -> Any:
     """Return any complete JSON document from the repository by relative path."""
     logger.info("get_json_definition file_path=%s", file_path)
@@ -492,17 +534,16 @@ def get_json_definition(file_path: str) -> Any:
 
 
 @mcp.tool()
+@cache_result
 def get_json_fields(file_path: str, fields: list[str]) -> dict[str, Any]:
-    """Read selected dot-path fields from a JSON definition.
-
-    Prefer this over get_json_definition when only a few fields are required.
-    """
+    """Read selected dot-path fields from a JSON definition."""
     logger.info("get_json_fields file_path=%s fields=%s", file_path, fields)
     data = get_json(REPO_PATH, file_path)
     return select_json_fields(data, fields)
 
 
 @mcp.tool()
+@cache_result
 def get_json_value_by_path(file_path: str, json_path: str) -> Any:
     """Return one nested JSON value using dot notation."""
     logger.info(

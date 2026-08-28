@@ -2,6 +2,7 @@
   "file_patterns": {
     "apis": [
       "**/*.Api.json",
+      "**/*API.json",
       "**/*api*.json"
     ],
     "applications": [
@@ -81,6 +82,27 @@
   },
   "summary": {
     "max_values_per_field": 10
+  },
+  "environments": {
+    "default_scope": "test_int",
+    "remote": "origin",
+    "refresh_on_startup": true,
+    "worktree_root": "./.worktrees",
+    "stages": {
+      "test": {
+        "branch": "test"
+      },
+      "regress": {
+        "branch": "release"
+      },
+      "prod": {
+        "branch": "master"
+      }
+    },
+    "zones": {
+      "int": "INT",
+      "ext": "EXT"
+    }
   },
   "cache": {
     "enabled": true,

@@ -400,6 +400,18 @@ def _read_by_scope(
 
 
 @mcp.tool()
+def git_pull(scope: str = DEFAULT_SCOPE) -> list[dict[str, Any]]:
+    """Pull managed Git environment(s). scope: stage_zone, stage, or all.
+
+    Worktrees are detached, so this performs the safe equivalent of git pull:
+    fetch remote refs and reset the selected stage worktree(s) to their
+    configured remote branches. Default scope: test_int.
+    """
+    logger.info("git_pull scope=%s", scope)
+    return ENVIRONMENTS.pull(scope)
+
+
+@mcp.tool()
 def search_api_by_id(api_id: str, scope: str = DEFAULT_SCOPE) -> list[dict[str, Any]]:
     """Find APIs by exact id. scope: stage_zone, stage, or all. Default: test_int."""
     logger.info("search_api_by_id api_id=%s scope=%s", api_id, scope)

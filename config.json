@@ -1,0 +1,85 @@
+{
+  "file_patterns": {
+    "apis": [
+      "**/*.Api.json",
+      "**/*api*.json"
+    ],
+    "applications": [
+      "**/*.Application.json",
+      "**/*application*.json",
+      "**/*app*.json"
+    ],
+    "all_json": [
+      "**/*.json"
+    ],
+    "exclude": [
+      "**/.git/**",
+      "**/node_modules/**",
+      "**/.venv/**",
+      "**/venv/**"
+    ]
+  },
+  "field_paths": {
+    "api": {
+      "id": [
+        "id",
+        "api",
+        "api_id",
+        "apiId",
+        "metadata.id"
+      ],
+      "name": [
+        "name",
+        "metadata.name"
+      ],
+      "version": [
+        "version",
+        "apiVersion",
+        "metadata.version"
+      ],
+      "description": [
+        "description",
+        "metadata.description"
+      ],
+      "state": [
+        "lifecycle_state",
+        "lifecycleState",
+        "state"
+      ]
+    },
+    "application": {
+      "id": [
+        "id",
+        "application",
+        "application_id",
+        "applicationId",
+        "metadata.id"
+      ],
+      "name": [
+        "name",
+        "metadata.name"
+      ],
+      "description": [
+        "description",
+        "metadata.description"
+      ],
+      "client_id": [
+        "client_id",
+        "clientId",
+        "settings.client_id",
+        "settings.clientId",
+        "settings.oauth.client_id",
+        "settings.oauth.clientId",
+        "settings.app.client_id",
+        "settings.app.clientId"
+      ],
+      "type": [
+        "type",
+        "settings.type"
+      ]
+    }
+  },
+  "summary": {
+    "max_values_per_field": 10
+  }
+}
